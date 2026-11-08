@@ -1,0 +1,60 @@
+{
+  "info": {
+    "name": "tp2-graphql",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Listar Livros (Query)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "{\n  livros {\n    id\n    titulo\n  }\n}",
+            "variables": ""
+          }
+        },
+        "url": {
+          "raw": "http://localhost:3000/graphql",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "3000",
+          "path": ["graphql"]
+        }
+      }
+    },
+    {
+      "name": "Criar Livro - Sucesso (Mutation)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "graphql",
+          "graphql": {
+            "query": "mutation {\n  createLivro(titulo: \"Clean Code\", autor: \"Robert Martin\", estado: disponivel) {\n    id\n    titulo\n    criadoEm\n  }\n}",
+            "variables": ""
+          }
+        },
+        "url": {
+          "raw": "http://localhost:3000/graphql",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "3000",
+          "path": ["graphql"]
+        }
+      }
+    }
+  ]
+}
