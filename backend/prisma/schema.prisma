@@ -1,0 +1,56 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum EstadoLivro {
+  disponivel
+  emprestado
+  avariado
+}
+
+enum EstadoCliente {
+  ativo
+  inativo
+}
+
+model Item {
+  id   Int    @id @default(autoincrement())
+  name String @db.VarChar(100)
+}
+
+model Cliente {
+  id          Int           @id @default(autoincrement())
+  nome        String        @db.VarChar(100)
+  email       String        @unique @db.VarChar(150)
+  estado      EstadoCliente @default(ativo)
+  criadoEm    DateTime      @default(now())
+  emprestimos Emprestimo[]
+}
+
+model Livro {
+  id          Int          @id @default(autoincrement())
+  titulo      String       @db.VarChar(200)
+  autor       String       @db.VarChar(150)
+  estado      EstadoLivro  @default(disponivel)
+  criadoEm    DateTime     @default(now())
+  emprestimos Emprestimo[]
+}
+
+model Emprestimo {
+  id           Int       @id @default(autoincrement())
+  clienteId    Int
+  livroId      Int
+  emprestadoEm DateTime  @default(now())
+  devolvidoEm  DateTime?
+
+  cliente Cliente @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  livro   Livro   @relation(fields: [livroId], references: [id], onDelete: Restrict)
+
+  @@index([clienteId])
+  @@index([livroId])
+}

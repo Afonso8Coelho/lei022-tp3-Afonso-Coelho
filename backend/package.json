@@ -13,6 +13,7 @@
   "type": "commonjs",
   "dependencies": {
     "@prisma/client": "^6.19.3",
+    "dotenv": "^18.0.10",
     "express": "^5.2.1",
     "graphql": "^17.0.2",
     "graphql-http": "^1.23.1",

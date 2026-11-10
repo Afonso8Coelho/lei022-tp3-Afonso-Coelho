@@ -1,87 +1,77 @@
+require('dotenv').config();
 const express = require('express');
-const app = express();
 const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
 const criarHandlerGraphQL = require('./graphql');
+
+const app = express();
+const prisma = new PrismaClient();
+const PORT = process.env.PORT || 3000;
+
 app.use(express.json());
-const PORT = 3000;
 
 function sendError(res, status, title, detail) {
     return res
         .status(status)
         .type('application/problem+json')
-        .json({
-            status,
-            title,
-            detail
-        });
+        .json({ status, title, detail });
 }
 
-const items = [
-    { id: 1, name: 'Item1' },
-    { id: 2, name: 'Item2' }
-];
-
-const clientes = [
-    {
-        id: 1,
-        nome: 'Afonso',
-        email: 'Afonso@email.com',
-        estado: 'ativo',
-        criadoEm: new Date().toISOString()
+class HttpError extends Error {
+    constructor(status, title, detail) {
+        super(detail);
+        this.status = status;
+        this.title = title;
+        this.detail = detail;
     }
-];
+}
 
-const livros = [
-    {
-        id: 1,
-        titulo: 'Node.js',
-        autor: 'Afonso Coelho',
-        estado: 'disponivel',
-        criadoEm: new Date().toISOString()
+const ah = fn => (req, res, next) =>
+    Promise.resolve(fn(req, res, next)).catch(next);
+
+function parseId(value) {
+    const id = Number(value);
+    if (!Number.isInteger(id) || id <= 0) {
+        throw new HttpError(400, 'Pedido inválido', 'id inválido');
     }
-];
+    return id;
+}
 
-app.get('/api/items', (req, res) => {
-    const { name, sort, order, page, limit } = req.query;
-
-    let result = [...items];
-
-    if (name !== undefined) {
-        if (typeof name !== 'string') {
-            return sendError(
-                res,
-                400,
-                'Pedido inválido',
-                'Parâmetro name inválido'
-            );
-        }
-
-        const term = name.trim().toLowerCase();
-
-        result = result.filter(item =>
-            item.name.toLowerCase().includes(term)
+function textoObrigatorio(valor, campo) {
+    if (typeof valor !== 'string' || valor.trim() === '') {
+        throw new HttpError(
+            400,
+            'Pedido inválido',
+            `${campo} é obrigatório e deve ser texto não vazio`
         );
     }
+    return valor.trim();
+}
 
+const ESTADOS_LIVRO = ['disponivel', 'emprestado', 'avariado'];
+const ESTADOS_CLIENTE = ['ativo', 'inativo'];
+
+app.get('/api/items', ah(async (req, res) => {
+    const { name, sort, order, page, limit } = req.query;
+
+    const where = {};
+    if (name !== undefined) {
+        if (typeof name !== 'string') {
+            throw new HttpError(400, 'Pedido inválido', 'Parâmetro name inválido');
+        }
+        where.name = { contains: name.trim(), mode: 'insensitive' };
+    }
+
+    let orderBy = { id: 'asc' };
     if (sort) {
         if (sort !== 'id' && sort !== 'name') {
-            return sendError(
-                res,
+            throw new HttpError(
                 400,
                 'Pedido inválido',
                 'Parâmetro sort inválido. Utilize "id" ou "name"'
             );
         }
-
-        const orderDir =
-            (order && order.toLowerCase() === 'desc') ? -1 : 1;
-
-        result.sort((a, b) => {
-            if (a[sort] < b[sort]) return -1 * orderDir;
-            if (a[sort] > b[sort]) return 1 * orderDir;
-            return 0;
-        });
+        const dir = order && order.toLowerCase() === 'desc' ? 'desc' : 'asc';
+        orderBy = { [sort]: dir };
     }
 
     if (page !== undefined || limit !== undefined) {
@@ -89,296 +79,300 @@ app.get('/api/items', (req, res) => {
         const limitNum = Number(limit || 10);
 
         if (
-            !Number.isInteger(pageNum) ||
-            pageNum < 1 ||
-            !Number.isInteger(limitNum) ||
-            limitNum < 1
+            !Number.isInteger(pageNum) || pageNum < 1 ||
+            !Number.isInteger(limitNum) || limitNum < 1
         ) {
-            return sendError(
-                res,
+            throw new HttpError(
                 400,
                 'Pedido inválido',
                 'Parâmetros de paginação inválidos. Use inteiros positivos'
             );
         }
 
-        const total = result.length;
-        const startIndex = (pageNum - 1) * limitNum;
+        const [total, items] = await Promise.all([
+            prisma.item.count({ where }),
+            prisma.item.findMany({
+                where,
+                orderBy,
+                skip: (pageNum - 1) * limitNum,
+                take: limitNum
+            })
+        ]);
 
-        const paginatedItems = result.slice(
-            startIndex,
-            startIndex + limitNum
-        );
-
-        return res.status(200).json({
-            page: pageNum,
-            limit: limitNum,
-            total,
-            items: paginatedItems
-        });
+        return res.status(200).json({ page: pageNum, limit: limitNum, total, items });
     }
 
-    res.status(200).json(result);
-});
+    res.status(200).json(await prisma.item.findMany({ where, orderBy }));
+}));
 
-app.get('/api/items/:id', (req, res) => {
-    const id = Number(req.params.id);
-
-    if (!Number.isInteger(id) || id <= 0) {
-        return sendError(res, 400, 'Pedido inválido', 'id inválido');
-    }
-
-    const item = items.find(item => item.id === id);
-
+app.get('/api/items/:id', ah(async (req, res) => {
+    const id = parseId(req.params.id);
+    const item = await prisma.item.findUnique({ where: { id } });
     if (!item) {
-        return sendError(
-            res,
-            404,
-            'Não encontrado',
-            `Não existe item com id ${id}`
-        );
+        throw new HttpError(404, 'Não encontrado', `Não existe item com id ${id}`);
     }
-
     res.status(200).json(item);
-});
+}));
 
-app.get('/api/livros', (req, res) => {
-    res.status(200).json(livros);
-});
+app.post('/api/items', ah(async (req, res) => {
+    const name = textoObrigatorio((req.body || {}).name, 'name');
+    const novo = await prisma.item.create({ data: { name } });
+    res.status(201).location(`/api/items/${novo.id}`).json(novo);
+}));
 
-app.get('/api/livros/:id', (req, res) => {
-    const id = Number(req.params.id);
+app.put('/api/items/:id', ah(async (req, res) => {
+    const id = parseId(req.params.id);
+    const name = textoObrigatorio((req.body || {}).name, 'name');
+    const item = await prisma.item.update({ where: { id }, data: { name } });
+    res.status(200).json(item);
+}));
 
-    if (!Number.isInteger(id) || id <= 0) {
-        return sendError(res, 400, 'Pedido inválido', 'id inválido');
-    }
+app.delete('/api/items/:id', ah(async (req, res) => {
+    const id = parseId(req.params.id);
+    await prisma.item.delete({ where: { id } });
+    res.status(204).send();
+}));
 
-    const livro = livros.find(l => l.id === id);
+app.get('/api/livros', ah(async (req, res) => {
+    res.status(200).json(await prisma.livro.findMany({ orderBy: { id: 'asc' } }));
+}));
 
+app.get('/api/livros/:id', ah(async (req, res) => {
+    const id = parseId(req.params.id);
+    const livro = await prisma.livro.findUnique({ where: { id } });
     if (!livro) {
-        return sendError(
-            res,
-            404,
-            'Não encontrado',
-            `Não existe livro com id ${id}`
-        );
+        throw new HttpError(404, 'Não encontrado', `Não existe livro com id ${id}`);
     }
-
     res.status(200).json(livro);
-});
+}));
 
-app.get('/api/clientes', (req, res) => {
-    res.status(200).json(clientes);
-});
-
-app.post('/api/items', (req, res) => {
-    const { name } = req.body;
-
-    if (typeof name !== 'string' || name.trim() === '') {
-        return sendError(
-            res,
-            400,
-            'Pedido inválido',
-            'name é obrigatório e deve ser texto não vazio'
-        );
+// Relação: histórico de empréstimos de um livro
+app.get('/api/livros/:id/emprestimos', ah(async (req, res) => {
+    const id = parseId(req.params.id);
+    const livro = await prisma.livro.findUnique({
+        where: { id },
+        include: { emprestimos: { include: { cliente: true }, orderBy: { id: 'asc' } } }
+    });
+    if (!livro) {
+        throw new HttpError(404, 'Não encontrado', `Não existe livro com id ${id}`);
     }
+    res.status(200).json(livro.emprestimos);
+}));
 
-    const newItem = {
-        id: items.length
-            ? Math.max(...items.map(item => item.id)) + 1
-            : 1,
-        name: name.trim()
-    };
-
-    items.push(newItem);
-
-    res
-        .status(201)
-        .location(`/api/items/${newItem.id}`)
-        .json(newItem);
-});
-
-app.post('/api/livros', (req, res) => {
-    const { titulo, autor, estado } = req.body;
+app.post('/api/livros', ah(async (req, res) => {
+    const { titulo, autor, estado } = req.body || {};
 
     if (
         typeof titulo !== 'string' ||
         typeof autor !== 'string' ||
         typeof estado !== 'string'
     ) {
-        return sendError(res, 400, 'Pedido inválido', 'Dados inválidos');
+        throw new HttpError(400, 'Pedido inválido', 'Dados inválidos');
+    }
+    if (!ESTADOS_LIVRO.includes(estado)) {
+        throw new HttpError(400, 'Pedido inválido', 'Estado inválido');
     }
 
-    const estadosPermitidos = ['disponivel', 'emprestado', 'avariado'];
+    const novo = await prisma.livro.create({
+        data: {
+            titulo: textoObrigatorio(titulo, 'titulo'),
+            autor: textoObrigatorio(autor, 'autor'),
+            estado
+        }
+    });
+    res.status(201).location(`/api/livros/${novo.id}`).json(novo);
+}));
 
-    if (!estadosPermitidos.includes(estado)) {
-        return sendError(res, 400, 'Pedido inválido', 'Estado inválido');
-    }
-
-    const existe = livros.find(
-        l => l.titulo.toLowerCase() === titulo.toLowerCase()
-    );
-
-    if (existe) {
-        return sendError(
-            res,
-            409,
-            'Conflito',
-            'Já existe um livro com esse título'
-        );
-    }
-
-    const novoLivro = {
-        id: livros.length
-            ? Math.max(...livros.map(l => l.id)) + 1
-            : 1,
-        titulo: titulo.trim(),
-        autor: autor.trim(),
-        estado,
-        criadoEm: new Date().toISOString()
-    };
-
-    livros.push(novoLivro);
-
-    res
-        .status(201)
-        .location(`/api/livros/${novoLivro.id}`)
-        .json(novoLivro);
-});
-
-app.put('/api/items/:id', (req, res) => {
-    const id = Number(req.params.id);
-
-    if (!Number.isInteger(id) || id <= 0) {
-        return sendError(res, 400, 'Pedido inválido', 'id inválido');
-    }
-
-    const item = items.find(item => item.id === id);
-
-    if (!item) {
-        return sendError(
-            res,
-            404,
-            'Não encontrado',
-            `Não existe item com id ${id}`
-        );
-    }
-
-    const { name } = req.body || {};
-
-    if (typeof name !== 'string' || name.trim() === '') {
-        return sendError(
-            res,
-            400,
-            'Pedido inválido',
-            'O campo name é obrigatório'
-        );
-    }
-
-    item.name = name.trim();
-
-    res.status(200).json(item);
-});
-
-app.put('/api/livros/:id', (req, res) => {
-    const id = Number(req.params.id);
-
-    if (!Number.isInteger(id) || id <= 0) {
-        return sendError(res, 400, 'Pedido inválido', 'id inválido');
-    }
-
-    const livro = livros.find(l => l.id === id);
-
-    if (!livro) {
-        return sendError(
-            res,
-            404,
-            'Não encontrado',
-            `Não existe livro com id ${id}`
-        );
-    }
-
-    const { titulo, autor, estado } = req.body;
-
-    const estadosPermitidos = ['disponivel', 'emprestado', 'avariado'];
+app.put('/api/livros/:id', ah(async (req, res) => {
+    const id = parseId(req.params.id);
+    const { titulo, autor, estado } = req.body || {};
 
     if (
         typeof titulo !== 'string' ||
         typeof autor !== 'string' ||
-        !estadosPermitidos.includes(estado)
+        !ESTADOS_LIVRO.includes(estado)
     ) {
-        return sendError(res, 400, 'Pedido inválido', 'Dados inválidos');
+        throw new HttpError(400, 'Pedido inválido', 'Dados inválidos');
     }
 
-    const duplicado = livros.find(
-        l =>
-            l.id !== id &&
-            l.titulo.toLowerCase() === titulo.toLowerCase()
-    );
-
-    if (duplicado) {
-        return sendError(
-            res,
-            409,
-            'Conflito',
-            'Já existe um livro com esse título'
-        );
-    }
-
-    livro.titulo = titulo.trim();
-    livro.autor = autor.trim();
-    livro.estado = estado;
-
+    const livro = await prisma.livro.update({
+        where: { id },
+        data: {
+            titulo: textoObrigatorio(titulo, 'titulo'),
+            autor: textoObrigatorio(autor, 'autor'),
+            estado
+        }
+    });
     res.status(200).json(livro);
-});
+}));
 
-app.delete('/api/items/:id', (req, res) => {
-    const id = Number(req.params.id);
+app.delete('/api/livros/:id', ah(async (req, res) => {
+    const id = parseId(req.params.id);
+    await prisma.livro.delete({ where: { id } }); // P2003 -> 409 se tiver empréstimos
+    res.status(204).send();
+}));
 
-    if (!Number.isInteger(id) || id <= 0) {
-        return sendError(res, 400, 'Pedido inválido', 'id inválido');
+app.get('/api/clientes', ah(async (req, res) => {
+    res.status(200).json(await prisma.cliente.findMany({ orderBy: { id: 'asc' } }));
+}));
+
+app.get('/api/clientes/:id', ah(async (req, res) => {
+    const id = parseId(req.params.id);
+    const cliente = await prisma.cliente.findUnique({ where: { id } });
+    if (!cliente) {
+        throw new HttpError(404, 'Não encontrado', `Não existe cliente com id ${id}`);
+    }
+    res.status(200).json(cliente);
+}));
+
+app.get('/api/clientes/:id/emprestimos', ah(async (req, res) => {
+    const id = parseId(req.params.id);
+    const cliente = await prisma.cliente.findUnique({
+        where: { id },
+        include: { emprestimos: { include: { livro: true }, orderBy: { id: 'asc' } } }
+    });
+    if (!cliente) {
+        throw new HttpError(404, 'Não encontrado', `Não existe cliente com id ${id}`);
+    }
+    res.status(200).json(cliente.emprestimos);
+}));
+
+app.post('/api/clientes', ah(async (req, res) => {
+    const { nome, email, estado = 'ativo' } = req.body || {};
+    const emailLimpo = textoObrigatorio(email, 'email');
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailLimpo)) {
+        throw new HttpError(400, 'Pedido inválido', 'email inválido');
+    }
+    if (!ESTADOS_CLIENTE.includes(estado)) {
+        throw new HttpError(400, 'Pedido inválido', 'Estado inválido');
     }
 
-    const index = items.findIndex(item => item.id === id);
+    const novo = await prisma.cliente.create({
+        data: { nome: textoObrigatorio(nome, 'nome'), email: emailLimpo.toLowerCase(), estado }
+    });
+    res.status(201).location(`/api/clientes/${novo.id}`).json(novo);
+}));
 
-    if (index === -1) {
-        return sendError(
-            res,
-            404,
-            'Não encontrado',
-            `Não existe item com id ${id}`
+app.put('/api/clientes/:id', ah(async (req, res) => {
+    const id = parseId(req.params.id);
+    const { nome, email, estado } = req.body || {};
+    const emailLimpo = textoObrigatorio(email, 'email');
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailLimpo)) {
+        throw new HttpError(400, 'Pedido inválido', 'email inválido');
+    }
+    if (!ESTADOS_CLIENTE.includes(estado)) {
+        throw new HttpError(400, 'Pedido inválido', 'Estado inválido');
+    }
+
+    const cliente = await prisma.cliente.update({
+        where: { id },
+        data: { nome: textoObrigatorio(nome, 'nome'), email: emailLimpo.toLowerCase(), estado }
+    });
+    res.status(200).json(cliente);
+}));
+
+app.delete('/api/clientes/:id', ah(async (req, res) => {
+    const id = parseId(req.params.id);
+    await prisma.cliente.delete({ where: { id } }); // P2003 -> 409 se tiver empréstimos
+    res.status(204).send();
+}));
+
+app.get('/api/emprestimos', ah(async (req, res) => {
+    res.status(200).json(
+        await prisma.emprestimo.findMany({
+            include: { cliente: true, livro: true },
+            orderBy: { id: 'asc' }
+        })
+    );
+}));
+
+app.get('/api/emprestimos/:id', ah(async (req, res) => {
+    const id = parseId(req.params.id);
+    const emp = await prisma.emprestimo.findUnique({
+        where: { id },
+        include: { cliente: true, livro: true }
+    });
+    if (!emp) {
+        throw new HttpError(404, 'Não encontrado', `Não existe empréstimo com id ${id}`);
+    }
+    res.status(200).json(emp);
+}));
+
+app.post('/api/emprestimos', ah(async (req, res) => {
+    const { clienteId, livroId } = req.body || {};
+
+    if (
+        !Number.isInteger(clienteId) || clienteId <= 0 ||
+        !Number.isInteger(livroId) || livroId <= 0
+    ) {
+        throw new HttpError(
+            400,
+            'Pedido inválido',
+            'clienteId e livroId são obrigatórios e devem ser inteiros positivos'
         );
     }
 
-    items.splice(index, 1);
+    const emprestimo = await prisma.$transaction(async (tx) => {
+        const cliente = await tx.cliente.findUnique({ where: { id: clienteId } });
+        if (!cliente) {
+            throw new HttpError(404, 'Não encontrado', `Não existe cliente com id ${clienteId}`);
+        }
+        if (cliente.estado !== 'ativo') {
+            throw new HttpError(409, 'Conflito', 'O cliente não está ativo');
+        }
 
-    res.status(204).send();
-});
+        const atualizado = await tx.livro.updateMany({
+            where: { id: livroId, estado: 'disponivel' },
+            data: { estado: 'emprestado' }
+        });
 
-app.delete('/api/livros/:id', (req, res) => {
-    const id = Number(req.params.id);
+        if (atualizado.count === 0) {
+            const livro = await tx.livro.findUnique({ where: { id: livroId } });
+            if (!livro) {
+                throw new HttpError(404, 'Não encontrado', `Não existe livro com id ${livroId}`);
+            }
+            throw new HttpError(409, 'Conflito', `O livro não está disponível (estado: ${livro.estado})`);
+        }
 
-    if (!Number.isInteger(id) || id <= 0) {
-        return sendError(res, 400, 'Pedido inválido', 'id inválido');
-    }
+        return tx.emprestimo.create({
+            data: { clienteId, livroId },
+            include: { cliente: true, livro: true }
+        });
+    });
 
-    const index = livros.findIndex(l => l.id === id);
+    res.status(201).location(`/api/emprestimos/${emprestimo.id}`).json(emprestimo);
+}));
 
-    if (index === -1) {
-        return sendError(
-            res,
-            404,
-            'Não encontrado',
-            `Não existe livro com id ${id}`
-        );
-    }
+app.post('/api/emprestimos/:id/devolver', ah(async (req, res) => {
+    const id = parseId(req.params.id);
 
-    livros.splice(index, 1);
+    const emprestimo = await prisma.$transaction(async (tx) => {
+        const atual = await tx.emprestimo.findUnique({ where: { id } });
+        if (!atual) {
+            throw new HttpError(404, 'Não encontrado', `Não existe empréstimo com id ${id}`);
+        }
+        if (atual.devolvidoEm) {
+            throw new HttpError(409, 'Conflito', 'Este empréstimo já foi devolvido');
+        }
 
-    res.status(204).send();
-});
+        await tx.livro.update({
+            where: { id: atual.livroId },
+            data: { estado: 'disponivel' }
+        });
 
-app.all('/graphql', criarHandlerGraphQL({ livros }));
+        return tx.emprestimo.update({
+            where: { id },
+            data: { devolvidoEm: new Date() },
+            include: { cliente: true, livro: true }
+        });
+    });
+
+    res.status(200).json(emprestimo);
+}));
+
+app.all('/graphql', criarHandlerGraphQL({ prisma }));
 
 app.use((req, res) => {
     sendError(res, 404, 'Não encontrado', 'Rota não existe');
@@ -388,9 +382,40 @@ app.use((err, req, res, next) => {
     if (err.type === 'entity.parse.failed') {
         return sendError(res, 400, 'Pedido inválido', 'JSON malformado');
     }
+
+    if (err instanceof HttpError) {
+        return sendError(res, err.status, err.title, err.detail);
+    }
+
+    switch (err.code) {
+        case 'P2002':
+            return sendError(res, 409, 'Conflito', 'Já existe um registo com esse valor único');
+        case 'P2025':
+            return sendError(res, 404, 'Não encontrado', 'Registo não encontrado');
+        case 'P2003':
+            return sendError(
+                res,
+                409,
+                'Conflito',
+                'Violação de integridade: referência inválida ou registo em uso'
+            );
+        case 'P2000':
+            return sendError(res, 400, 'Pedido inválido', 'Valor demasiado longo para o campo');
+    }
+
+    if (/check constraint/i.test(err.message || '')) {
+        return sendError(res, 400, 'Pedido inválido', 'Valor viola uma regra da base de dados');
+    }
+
+    console.error(err);
     sendError(res, 500, 'Erro interno', 'Ocorreu um erro inesperado');
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`API a executar em http://localhost:${PORT}`);
+});
+
+process.on('SIGINT', async () => {
+    await prisma.$disconnect();
+    server.close(() => process.exit(0));
 });
